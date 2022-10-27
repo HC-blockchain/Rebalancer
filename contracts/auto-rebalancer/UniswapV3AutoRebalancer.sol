@@ -17,10 +17,12 @@ import "./lib/OptimalSwapAmount.sol";
 import "./lib/TickMathWithSpacing.sol";
 import "./lib/SafeCastExtend.sol";
 
+import "./interfaces/IUniswapV3AutoRebalancer.sol";
+
 import "hardhat/console.sol";
 
 /// @title Uniswap v3 auto rebalancing contract
-contract UniswapV3AutoRebalancer {
+contract UniswapV3AutoRebalancer is IUniswapV3AutoRebalancer {
     using LowGasSafeMath for uint256;
     using LowGasSafeMath for int256;
     using SafeCastExtend for uint256;
@@ -41,32 +43,6 @@ contract UniswapV3AutoRebalancer {
     // @dev For reentrancy lock guard.
     bool private constant _ENTERED = true;
     bool private constant _NOT_ENTERED = false;
-
-    event Deposit(
-        uint256 indexed positionId,
-        int24 tickLower,
-        int24 tickUpper,
-        uint128 liquidity,
-        uint256 amount0,
-        uint256 amount1
-    );
-
-    event Withdraw(
-        uint256 indexed positionId,
-        uint256 amount0,
-        uint256 amount1
-    );
-
-    event Rebalance(
-        uint256 indexed positionId,
-        uint256 amount0Old,
-        uint256 amount1Old,
-        int24 tickLower,
-        int24 tickUpper,
-        uint128 liquidity,
-        uint256 amount0,
-        uint256 amount1
-    );
 
     /// @dev The position data struct
     struct Position {
@@ -127,35 +103,38 @@ contract UniswapV3AutoRebalancer {
     }
 
     /// @dev Uniswap v3 mint callback function with no data
+    /// @param _amount0 amount of token0 for minting
+    /// @param _amount1 amount of token1 for minting
     function uniswapV3MintCallback(
-        uint256 amount0Owed,
-        uint256 amount1Owed,
+        uint256 _amount0,
+        uint256 _amount1,
         bytes calldata
     ) external onlyPool {
-        if (amount0Owed > 0) TransferHelper.safeTransfer(token0, address(pool), amount0Owed);
-        if (amount1Owed > 0) TransferHelper.safeTransfer(token1, address(pool), amount1Owed);
+        if (_amount0 > 0) TransferHelper.safeTransfer(token0, address(pool), _amount0);
+        if (_amount1 > 0) TransferHelper.safeTransfer(token1, address(pool), _amount1);
     }
 
     /// @dev Uniswap v3 swap callback function with no data
+    /// @param _amount0Delta delta amount of token0 in swap
+    /// @param _amount1Delta delta amount of token1 in swap
     function uniswapV3SwapCallback(
-        int256 amount0Delta,
-        int256 amount1Delta,
+        int256 _amount0Delta,
+        int256 _amount1Delta,
         bytes calldata
     ) external onlyPool {
-        require(amount0Delta > 0 || amount1Delta > 0);
+        require(_amount0Delta > 0 || _amount1Delta > 0);
 
-        if (amount0Delta > 0) {
-            TransferHelper.safeTransfer(token0, address(pool), uint256(amount0Delta));
+        if (_amount0Delta > 0) {
+            TransferHelper.safeTransfer(token0, address(pool), uint256(_amount0Delta));
             return;
         }
-        TransferHelper.safeTransfer(token1, address(pool), uint256(amount1Delta));
+        TransferHelper.safeTransfer(token1, address(pool), uint256(_amount1Delta));
     }
 
-
-    /// @dev Deposit usdc and open uniswap v3 position
+    /// @dev Deposit usdc and open uniswap v3 position.
     /// @param _amountUsdc position open size of usdc
-    /// @param _maxIterations max swap iteration count for optimal deposit
-    function deposit(uint256 _amountUsdc, uint8 _maxIterations) external lock {
+    /// @param _maxIterations max swap iteration count for optimal deposit.
+    function deposit(uint256 _amountUsdc, uint8 _maxIterations) external override lock {
         require(_amountUsdc != 0, "Cannot deposit zero USDC.");
         require(_maxIterations >= 1, "At least one iteration.");
         require(_maxIterations < 10, "Too many iterations.");
@@ -190,7 +169,7 @@ contract UniswapV3AutoRebalancer {
         uint8 maxIterations;
     }
 
-    /// @dev If the iteration is too high, the decimal point disappearing problem may occur (not revert).
+    /// @dev Open uniswap v3 position.
     function openPosition(OpenPositionParam memory _param) internal returns (
         int24 tickLower,
         int24 tickUpper,
@@ -272,7 +251,9 @@ contract UniswapV3AutoRebalancer {
         });
     }
 
-    function withdraw(uint256 _positionId) external lock {
+    /// @dev Close v3 position and Withdraw USDC to owner.
+    /// @param _positionId position id
+    function withdraw(uint256 _positionId) external override lock {
         require(positions[_positionId].owner == msg.sender, "Not position owner.");
 
         (uint256 amount0, uint256 amount1) = closePosition(_positionId);
@@ -298,16 +279,15 @@ contract UniswapV3AutoRebalancer {
                 .add(zeroForOne ? amount1 : amount0)
                 .sub(usdcBalanceBeforeSwap);
 
-        TransferHelper.safeTransfer(
-            usdc,
-            msg.sender,
-            withdrawUsdcAmount
-        );
+        TransferHelper.safeTransfer(usdc, msg.sender, withdrawUsdcAmount);
+
         delete positions[_positionId];
 
         emit Withdraw(_positionId, totalAmount0, totalAmount1);
     }
 
+    /// @dev Close uniswap v3 position and collect tokens.
+    /// @param _positionId position id
     function closePosition(
         uint256 _positionId
     ) internal returns (
@@ -324,27 +304,27 @@ contract UniswapV3AutoRebalancer {
         (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) = pool.positions(positionKey);
 
         position.tokensOwed0 +=
-        uint128(
             FullMath.mulDiv(
                 feeGrowthInside0LastX128 - position.feeGrowthInside0LastX128,
                     position.liquidity,
                 FixedPoint128.Q128
-            )
-        );
+            ).toUint128();
+
         position.tokensOwed1 +=
-        uint128(
             FullMath.mulDiv(
                 feeGrowthInside1LastX128 - position.feeGrowthInside1LastX128,
                     position.liquidity,
                 FixedPoint128.Q128
-            )
-        );
+            ).toUint128();
 
         position.feeGrowthInside0LastX128 = feeGrowthInside0LastX128;
         position.feeGrowthInside1LastX128 = feeGrowthInside1LastX128;
         position.liquidity = 0;
     }
 
+    /// @dev Collect tokens from pool
+    /// @param _tickLower Lower tick of position to collect (using key)
+    /// @param _tickLower Upper tick of position to collect (using key)
     function collectFromPool(
         int24 _tickLower,
         int24 _tickUpper
@@ -362,7 +342,10 @@ contract UniswapV3AutoRebalancer {
         );
     }
 
-    function triggerRebalance(uint256 _positionId, uint8 _maxIterations) external lock {
+    /// @dev Trigger close and open position at ㅁ rebalanced price on the same position id.
+    /// @param _positionId position id
+    /// @param _maxIterations max swap iteration count for optimal deposit.
+    function triggerRebalance(uint256 _positionId, uint8 _maxIterations) external override lock {
         require(_maxIterations >= 1, "At least 1 iteration.");
         require(
             _maxIterations >= 3
@@ -396,6 +379,8 @@ contract UniswapV3AutoRebalancer {
         emit Rebalance(_positionId, amount0Old, amount1Old, tickLower, tickUpper, liquidity, amount0, amount1);
     }
 
+    /// @dev Check this position over the trigger price.
+    /// @param _positionId position id
     function canTriggerRebalance(uint256 _positionId) internal view returns (bool) {
         (uint160 sqrtPriceX96, , , , , ,) = pool.slot0();
         uint160 lowerSqrtRatioX96 = TickMath.getSqrtRatioAtTick(positions[_positionId].tickLower);
