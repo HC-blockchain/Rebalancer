@@ -347,4 +347,48 @@ contract UniswapV3AutoRebalancer {
             type(uint128).max
         );
     }
+
+    function triggerRebalance(uint256 _positionId, uint8 _maxIterations) external lock {
+        require(_maxIterations >= 1, "At least 1 iteration.");
+        require(
+            _maxIterations >= 3
+            || positions[_positionId].owner == msg.sender,
+            "At least 3 iteration for others."
+        );
+        require(_maxIterations < 10, "Too many iterations.");
+        require(canTriggerRebalance(_positionId), "Not exceed trigger conditions");
+
+        (uint256 amount0Old, uint256 amount1Old) = closePosition(_positionId);
+
+        Position memory position = positions[_positionId];
+
+        amount0Old = amount0Old.add(position.tokensOwed0);
+        amount1Old = amount1Old.add(position.tokensOwed1);
+
+        uint256 balance0Before = IERC20(token0).balanceOf(address(this)).sub(amount0Old);
+        uint256 balance1Before = IERC20(token1).balanceOf(address(this)).sub(amount1Old);
+
+        (int24 tickLower, int24 tickUpper, uint128 liquidity, uint256 amount0, uint256 amount1) =
+            openPosition(
+                OpenPositionParam({
+                    owner: position.owner,
+                    positionId: _positionId,
+                    balance0Before: balance0Before,
+                    balance1Before: balance1Before,
+                    maxIterations: _maxIterations
+                })
+            );
+
+        emit Rebalance(_positionId, amount0Old, amount1Old, tickLower, tickUpper, liquidity, amount0, amount1);
+    }
+
+    function canTriggerRebalance(uint256 _positionId) internal view returns (bool) {
+        (uint160 sqrtPriceX96, , , , , ,) = pool.slot0();
+        uint160 lowerSqrtRatioX96 = TickMath.getSqrtRatioAtTick(positions[_positionId].tickLower);
+        uint160 upperSqrtRatioX96 = TickMath.getSqrtRatioAtTick(positions[_positionId].tickUpper);
+
+        if (sqrtPriceX96 >= lowerSqrtRatioX96 * LOWER_SQRT_PRICE_LIMIT_THRESHOLD &&
+            sqrtPriceX96 <= upperSqrtRatioX96 * UPPER_SQRT_PRICE_LIMIT_THRESHOLD) return false;
+        return true;
+    }
 }
