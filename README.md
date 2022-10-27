@@ -13,6 +13,12 @@ This repository contains the smart contracts for Uniswap v3 auto rebalancing.
   - triggerRebalance() : Trigger rebalancing when the condition is met.
     - lower trigger condition: current price < position's lower price * 1.01
     - upper trigger condition: current price > position's upper price * 0.99
+- OptimalSwapAmount.sol
+  - Calculate optimal ratio and optimal swap amount for deposit
+- SafeCastExtend.sol
+  - Library for cast type safely
+- TickMathWithSpacing.sol
+  - Library for tick math with spacing
 
 ## Licensing
 The primary license for Rebalancer is MIT
