@@ -24,9 +24,9 @@ library OptimalSwapAmount {
             _upperSqrtRatioX96
         );
 
-        uint inputTokenPrice = FullMath.mulDiv(_sqrtPriceX96, _sqrtPriceX96, 2 ** 96);
-        uint inputAmount = _amount0;
-        uint outputAmount = _amount1;
+        uint256 inputTokenPrice = FullMath.mulDiv(_sqrtPriceX96, _sqrtPriceX96, 2 ** 96);
+        uint256 inputAmount = _amount0;
+        uint256 outputAmount = _amount1;
         if (_amount0 * optimalRatioDenominator < optimalRatioNumerator * _amount1) {
             (inputAmount, outputAmount) = (_amount1, _amount0);
             (optimalRatioNumerator, optimalRatioDenominator) = (optimalRatioDenominator, optimalRatioNumerator);
@@ -34,8 +34,8 @@ library OptimalSwapAmount {
             zeroForOne = false;
         }
 
-        uint numerator = FullMath.mulDiv(optimalRatioNumerator, outputAmount, optimalRatioDenominator);
-        uint denominator = FullMath.mulDiv(optimalRatioNumerator, inputTokenPrice, optimalRatioDenominator).add(2 ** 96);
+        uint256 numerator = FullMath.mulDiv(optimalRatioNumerator, outputAmount, optimalRatioDenominator);
+        uint256 denominator = FullMath.mulDiv(optimalRatioNumerator, inputTokenPrice, optimalRatioDenominator).add(2 ** 96);
 
         if (numerator > inputAmount) {
             swapAmountIn = int256(FullMath.mulDiv((numerator - inputAmount), 2 ** 96, denominator)) * (-1);

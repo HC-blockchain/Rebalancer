@@ -10,7 +10,7 @@ contract MockERC20 is ERC20 {
     ) ERC20(name, symbol) {
     }
 
-    function mint(address to, uint amount) public {
+    function mint(address to, uint256 amount) public {
         _mint(to, amount);
     }
 
