@@ -257,4 +257,94 @@ contract UniswapV3AutoRebalancer {
             tokensOwed1 : IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before).toUint128()
         });
     }
+
+    function withdraw(uint256 _positionId) external lock {
+        require(positions[_positionId].owner == msg.sender, "Not position owner.");
+
+        (uint256 amount0, uint256 amount1) = closePosition(_positionId);
+
+        uint256 totalAmount0 = amount0.add(positions[_positionId].tokensOwed0);
+        uint256 totalAmount1 = amount1.add(positions[_positionId].tokensOwed1);
+
+        // Swap WETH to USDC
+        bool zeroForOne = IsWethToken0 ? true : false;
+        address usdc = IsWethToken0 ? token1 : token0;
+        uint256 usdcBalanceBeforeSwap = IERC20(usdc).balanceOf(address(this));
+
+        pool.swap(
+            address(this),
+            zeroForOne,
+            zeroForOne ? totalAmount0.toInt256() : totalAmount1.toInt256(),
+            zeroForOne ? TickMath.MIN_SQRT_RATIO + 1 : TickMath.MAX_SQRT_RATIO - 1,
+            new bytes(0)
+        );
+
+        uint withdrawUsdcAmount =
+            IERC20(usdc).balanceOf(address(this))
+                .add(zeroForOne ? amount1 : amount0)
+                .sub(usdcBalanceBeforeSwap);
+
+        TransferHelper.safeTransfer(
+            usdc,
+            msg.sender,
+            withdrawUsdcAmount
+        );
+        delete positions[_positionId];
+
+        emit Withdraw(_positionId, totalAmount0, totalAmount1);
+    }
+
+    function closePosition(
+        uint256 _positionId
+    ) internal returns (
+        uint256 amount0,
+        uint256 amount1
+    ) {
+        Position storage position = positions[_positionId];
+        require(position.liquidity != 0, "Already closed position.");
+
+        (amount0, amount1) = pool.burn(position.tickLower, position.tickUpper, position.liquidity);
+        collectFromPool(position.tickLower, position.tickUpper);
+
+        bytes32 positionKey = PositionKey.compute(address(this), position.tickLower, position.tickUpper);
+        (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) = pool.positions(positionKey);
+
+        position.tokensOwed0 +=
+        uint128(
+            FullMath.mulDiv(
+                feeGrowthInside0LastX128 - position.feeGrowthInside0LastX128,
+                    position.liquidity,
+                FixedPoint128.Q128
+            )
+        );
+        position.tokensOwed1 +=
+        uint128(
+            FullMath.mulDiv(
+                feeGrowthInside1LastX128 - position.feeGrowthInside1LastX128,
+                    position.liquidity,
+                FixedPoint128.Q128
+            )
+        );
+
+        position.feeGrowthInside0LastX128 = feeGrowthInside0LastX128;
+        position.feeGrowthInside1LastX128 = feeGrowthInside1LastX128;
+        position.liquidity = 0;
+    }
+
+    function collectFromPool(
+        int24 _tickLower,
+        int24 _tickUpper
+    ) internal returns (
+        uint128 amount0,
+        uint128 amount1
+    ) {
+        // the actual amounts collected are returned
+        (amount0, amount1) = pool.collect(
+            address(this),
+            _tickLower,
+            _tickUpper,
+            type(uint128).max,
+            type(uint128).max
+        );
+    }
 }
