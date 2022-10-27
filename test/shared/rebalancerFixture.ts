@@ -10,7 +10,7 @@ import {FeeAmount, MaxUint128, TICK_SPACINGS} from './constants'
 import {
     IWETH9,
     MockTimeSwapRouter,
-    MockERC20,
+    MockOldERC20,
     IUniswapV3Factory,
     UniswapV3AutoRebalancer,
     MockUniswapPoolMinter
@@ -22,14 +22,14 @@ import {encodePriceSqrt, getMinTick, getMaxTick} from "./utilities";
 const rebalancerFixture: Fixture<{
     factory: IUniswapV3Factory
     router: MockTimeSwapRouter
-    weth: MockERC20
-    usdc: MockERC20
+    weth: MockOldERC20
+    usdc: MockOldERC20
     rebalancer: UniswapV3AutoRebalancer
 }> = async () => {
     const [deployer] = await ethers.getSigners();
-    const tokenFactory = await ethers.getContractFactory('MockERC20');
-    const weth = await tokenFactory.deploy("mockWETH", "weth") as MockERC20;
-    const usdc = await tokenFactory.deploy("mockUSDC", "usdc") as MockERC20;
+    const tokenFactory = await ethers.getContractFactory('MockOldERC20');
+    const weth = await tokenFactory.deploy("mockWETH", "weth", "18") as MockOldERC20;
+    const usdc = await tokenFactory.deploy("mockUSDC", "usdc", "6") as MockOldERC20;
 
 
     const weth9 = (await waffle.deployContract(deployer, {
@@ -53,7 +53,7 @@ const rebalancerFixture: Fixture<{
     const poolAddress = await factory.getPool(weth.address, usdc.address, FeeAmount.LOW);
 
     const pool = new ethers.Contract(poolAddress, IUniswapV3PoolABI, deployer)
-    await pool.initialize(encodePriceSqrt(1,1));
+    await pool.initialize(encodePriceSqrt("6666666666666666", "1000000000000000000"));
     let token0 = await pool.token0();
     let token1 = await pool.token1();
 
@@ -65,7 +65,7 @@ const rebalancerFixture: Fixture<{
     await minter.doMint(
         getMinTick(TICK_SPACINGS[FeeAmount.LOW]),
         getMaxTick(TICK_SPACINGS[FeeAmount.LOW]),
-        "10000000000000000000000"
+        "2842586650033787382"
     );
 
     const uniswapV3AutoRebalancerFactory = await ethers.getContractFactory('UniswapV3AutoRebalancer')

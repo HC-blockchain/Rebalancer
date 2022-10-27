@@ -19,8 +19,6 @@ import "./lib/SafeCastExtend.sol";
 
 import "./interfaces/IUniswapV3AutoRebalancer.sol";
 
-import "hardhat/console.sol";
-
 /// @title Uniswap v3 auto rebalancing contract
 contract UniswapV3AutoRebalancer is IUniswapV3AutoRebalancer {
     using LowGasSafeMath for uint256;
@@ -57,9 +55,9 @@ contract UniswapV3AutoRebalancer is IUniswapV3AutoRebalancer {
     }
 
     /// @dev The token ID position data
-    mapping(uint256 => Position) private positions;
+    mapping(uint256 => Position) public positions;
     /// @dev The ID of the next position.
-    uint256 private nextPositionId = 1;
+    uint256 public nextPositionId = 1;
 
     // @dev Uniswap v3 ETH-USDC pool.
     IUniswapV3Pool public pool;
@@ -132,12 +130,13 @@ contract UniswapV3AutoRebalancer is IUniswapV3AutoRebalancer {
     }
 
     /// @dev Deposit usdc and open uniswap v3 position.
+    /// In small amount of usdc, do iteration only once. (decimal loss problem occur.)
     /// @param _amountUsdc position open size of usdc
     /// @param _maxIterations max swap iteration count for optimal deposit.
     function deposit(uint256 _amountUsdc, uint8 _maxIterations) external override lock {
         require(_amountUsdc != 0, "Cannot deposit zero USDC.");
         require(_maxIterations >= 1, "At least one iteration.");
-        require(_maxIterations < 10, "Too many iterations.");
+        require(_maxIterations <= 3, "Too many iterations.");
 
         uint256 balance0Before = IERC20(token0).balanceOf(address(this));
         uint256 balance1Before = IERC20(token1).balanceOf(address(this));
@@ -179,76 +178,91 @@ contract UniswapV3AutoRebalancer is IUniswapV3AutoRebalancer {
     ) {
         (liquidity, amount0, amount1) = (0, 0, 0);
         (uint160 sqrtPriceX96, , , , , ,) = pool.slot0();
-        uint160 lowerSqrtRatioX96 =
-            FullMath.mulDiv(sqrtPriceX96, LOWER_SQRT_PRICE_OPEN_RATIO, RATIO_PRECISION).toUint160();
-        uint160 upperSqrtRatioX96 =
-            FullMath.mulDiv(sqrtPriceX96, UPPER_SQRT_PRICE_OPEN_RATIO, RATIO_PRECISION).toUint160();
+        {
+            uint160 lowerSqrtRatioX96 =
+                FullMath.mulDiv(sqrtPriceX96, LOWER_SQRT_PRICE_OPEN_RATIO, RATIO_PRECISION).toUint160();
+            uint160 upperSqrtRatioX96 =
+                FullMath.mulDiv(sqrtPriceX96, UPPER_SQRT_PRICE_OPEN_RATIO, RATIO_PRECISION).toUint160();
 
-        tickLower = TickMathWithSpacing.getTickLowerAtSqrtRatio(lowerSqrtRatioX96, tickSpacing);
-        tickUpper = TickMathWithSpacing.getTickUpperAtSqrtRatio(upperSqrtRatioX96, tickSpacing);
+            tickLower = TickMathWithSpacing.getTickLowerAtSqrtRatio(lowerSqrtRatioX96, tickSpacing);
+            tickUpper = TickMathWithSpacing.getTickUpperAtSqrtRatio(upperSqrtRatioX96, tickSpacing);
 
-        // Recalculate lower/upper price to remove noise between real price and tick price.
-        // Without under lines, many problems arise in small numbers.
-        lowerSqrtRatioX96 = TickMath.getSqrtRatioAtTick(tickLower);
-        upperSqrtRatioX96 = TickMath.getSqrtRatioAtTick(tickUpper);
+            // Recalculate lower/upper price to remove noise between real price and tick price.
+            // Without under lines, many problems arise in small numbers.
+            lowerSqrtRatioX96 = TickMath.getSqrtRatioAtTick(tickLower);
+            upperSqrtRatioX96 = TickMath.getSqrtRatioAtTick(tickUpper);
 
-        while (_param.maxIterations > 0) {
-            {
-                (int256 swapAmountIn, bool zeroForOne) =
-                OptimalSwapAmount.getOptimalSwapAmount(
-                    IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before),
-                    IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before),
+            while (_param.maxIterations > 0) {
+                {
+                    (int256 swapAmountIn, bool zeroForOne) =
+                    OptimalSwapAmount.getOptimalSwapAmount(
+                        IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before),
+                        IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before),
+                        sqrtPriceX96,
+                        lowerSqrtRatioX96,
+                        upperSqrtRatioX96
+                    );
+
+                    if (swapAmountIn <= int256(0)) break;
+                    pool.swap(
+                        address(this),
+                        zeroForOne,
+                        swapAmountIn,
+                        zeroForOne ? lowerSqrtRatioX96: upperSqrtRatioX96,
+                        new bytes(0)
+                    );
+                }
+
+                (sqrtPriceX96, , , , , ,) = pool.slot0();
+
+                uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmounts(
                     sqrtPriceX96,
                     lowerSqrtRatioX96,
-                    upperSqrtRatioX96
+                    upperSqrtRatioX96,
+                    IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before),
+                    IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before)
                 );
-
-                if (swapAmountIn <= int256(0)) break;
-                pool.swap(
+                (uint256 amount0delta, uint256 amount1delta ) = pool.mint(
                     address(this),
-                    zeroForOne,
-                    swapAmountIn,
-                    zeroForOne ? lowerSqrtRatioX96: upperSqrtRatioX96,
+                    tickLower,
+                    tickUpper,
+                    liquidityDelta,
                     new bytes(0)
                 );
+
+                liquidity = liquidity + liquidityDelta;
+                amount0 = amount0.add(amount0delta);
+                amount1 = amount1.add(amount1delta);
+                _param.maxIterations = _param.maxIterations - 1;
             }
-
-            (sqrtPriceX96, , , , , ,) = pool.slot0();
-
-            uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmounts(
-                sqrtPriceX96,
-                lowerSqrtRatioX96,
-                upperSqrtRatioX96,
-                IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before),
-                IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before)
-            );
-            (uint256 amount0delta, uint256 amount1delta ) = pool.mint(
-                address(this),
-                tickLower,
-                tickUpper,
-                liquidityDelta,
-                new bytes(0)
-            );
-
-            liquidity = liquidity + liquidityDelta;
-            amount0 = amount0.add(amount0delta);
-            amount1 = amount1.add(amount1delta);
-            _param.maxIterations = _param.maxIterations - 1;
         }
+        {
+            bytes32 positionKey = PositionKey.compute(address(this), tickLower, tickUpper);
+            (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) = pool.positions(positionKey);
 
-        bytes32 positionKey = PositionKey.compute(address(this), tickLower, tickUpper);
-        (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) = pool.positions(positionKey);
+            (uint positionId, address owner) = (_param.positionId,  _param.owner);
+            uint256 tokensOwed0 =
+                (IERC20(token0).balanceOf(address(this)) >= _param.balance0Before) ?
+                IERC20(token0).balanceOf(address(this)) - _param.balance0Before :
+                0;
 
-        positions[_param.positionId] = Position({
-            owner: _param.owner,
-            tickLower : tickLower,
-            tickUpper : tickUpper,
-            liquidity : liquidity,
-            feeGrowthInside0LastX128 : feeGrowthInside0LastX128,
-            feeGrowthInside1LastX128 : feeGrowthInside1LastX128,
-            tokensOwed0 : IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before).toUint128(),
-            tokensOwed1 : IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before).toUint128()
-        });
+            uint256 tokensOwed1 =
+                (IERC20(token1).balanceOf(address(this)) >= _param.balance1Before) ?
+                IERC20(token1).balanceOf(address(this)) - _param.balance1Before :
+                0;
+
+            positions[positionId] =
+                Position({
+                    owner: owner,
+                    tickLower : tickLower,
+                    tickUpper : tickUpper,
+                    liquidity : liquidity,
+                    feeGrowthInside0LastX128 : feeGrowthInside0LastX128,
+                    feeGrowthInside1LastX128 : feeGrowthInside1LastX128,
+                    tokensOwed0 : tokensOwed0.toUint128(),
+                    tokensOwed1 : tokensOwed1.toUint128()
+                });
+        }
     }
 
     /// @dev Close v3 position and Withdraw USDC to owner.
@@ -347,12 +361,7 @@ contract UniswapV3AutoRebalancer is IUniswapV3AutoRebalancer {
     /// @param _maxIterations max swap iteration count for optimal deposit.
     function triggerRebalance(uint256 _positionId, uint8 _maxIterations) external override lock {
         require(_maxIterations >= 1, "At least 1 iteration.");
-        require(
-            _maxIterations >= 3
-            || positions[_positionId].owner == msg.sender,
-            "At least 3 iteration for others."
-        );
-        require(_maxIterations < 10, "Too many iterations.");
+        require(_maxIterations <= 3, "Too many iterations.");
         require(canTriggerRebalance(_positionId), "Not exceed trigger conditions");
 
         (uint256 amount0Old, uint256 amount1Old) = closePosition(_positionId);
