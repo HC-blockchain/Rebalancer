@@ -395,8 +395,13 @@ contract UniswapV3AutoRebalancer is IUniswapV3AutoRebalancer {
         uint160 lowerSqrtRatioX96 = TickMath.getSqrtRatioAtTick(positions[_positionId].tickLower);
         uint160 upperSqrtRatioX96 = TickMath.getSqrtRatioAtTick(positions[_positionId].tickUpper);
 
-        if (sqrtPriceX96 >= lowerSqrtRatioX96 * LOWER_SQRT_PRICE_LIMIT_THRESHOLD &&
-            sqrtPriceX96 <= upperSqrtRatioX96 * UPPER_SQRT_PRICE_LIMIT_THRESHOLD) return false;
-        return true;
+        if (sqrtPriceX96 < FullMath.mulDiv(lowerSqrtRatioX96, LOWER_SQRT_PRICE_LIMIT_THRESHOLD, RATIO_PRECISION)) {
+            return true;
+        }
+
+        if (sqrtPriceX96 > FullMath.mulDiv(upperSqrtRatioX96, UPPER_SQRT_PRICE_LIMIT_THRESHOLD, RATIO_PRECISION)) {
+            return true;
+        }
+        return false;
     }
 }

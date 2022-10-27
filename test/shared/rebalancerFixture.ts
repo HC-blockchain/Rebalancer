@@ -57,9 +57,6 @@ const rebalancerFixture: Fixture<{
     let token0 = await pool.token0();
     let token1 = await pool.token1();
 
-    console.log(token0);
-    console.log(usdc.address);
-
     const mockUniswapPoolMinterFactory = await ethers.getContractFactory('MockUniswapPoolMinter')
     const minter = await mockUniswapPoolMinterFactory.deploy(poolAddress, token0, token1) as MockUniswapPoolMinter;
 
