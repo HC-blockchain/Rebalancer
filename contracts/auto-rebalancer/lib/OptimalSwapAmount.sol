@@ -6,6 +6,8 @@ import '@uniswap/v3-core/contracts/libraries/SqrtPriceMath.sol';
 library OptimalSwapAmount {
     using LowGasSafeMath for uint256;
     using LowGasSafeMath for int256;
+    using SafeCast for uint256;
+    using SafeCast for int256;
 
     function getOptimalSwapAmount(
         uint256 _amount0,
@@ -37,11 +39,7 @@ library OptimalSwapAmount {
         uint256 numerator = FullMath.mulDiv(optimalRatioNumerator, outputAmount, optimalRatioDenominator);
         uint256 denominator = FullMath.mulDiv(optimalRatioNumerator, inputTokenPrice, optimalRatioDenominator).add(2 ** 96);
 
-        if (numerator > inputAmount) {
-            swapAmountIn = int256(FullMath.mulDiv((numerator - inputAmount), 2 ** 96, denominator)) * (-1);
-        } else {
-            swapAmountIn = int256(FullMath.mulDiv((inputAmount - numerator), 2 ** 96, denominator));
-        }
+        swapAmountIn = FullMath.mulDiv((inputAmount - numerator), 2 ** 96, denominator).toInt256();
     }
 
     function getOptimalRatio(

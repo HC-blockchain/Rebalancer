@@ -27,16 +27,16 @@ contract UniswapV3AutoRebalancer {
     using SafeCast for uint256;
     using SafeCast for int256;
 
-    // @dev Price ratio/threshold precision = 1e4
-    uint160 private constant RATIO_PRECISION = 10000;
-    // @dev lower limit ratio = sqrt(1.01) * 10000
-    uint160 private constant LOWER_SQRT_PRICE_LIMIT_THRESHOLD = 10050;
-    // @dev upper limit ratio = sqrt(0.99) * 10000
-    uint160 private constant UPPER_SQRT_PRICE_LIMIT_THRESHOLD = 9950;
-    // @dev lower open ratio = sqrt(0.95) * 10000
-    uint160 private constant LOWER_SQRT_PRICE_OPEN_RATIO = 9747;
-    // @dev upper open ratio = sqrt(1.05) * 10000
-    uint160 private constant UPPER_SQRT_PRICE_OPEN_RATIO = 10247;
+    // @dev Price ratio/threshold precision = 1e12
+    uint160 private constant RATIO_PRECISION = 1e12;
+    // @dev lower limit ratio = sqrt(1.01) * 1e12
+    uint160 private constant LOWER_SQRT_PRICE_LIMIT_THRESHOLD = 1004987562112;
+    // @dev upper limit ratio = sqrt(0.99) * 1e12
+    uint160 private constant UPPER_SQRT_PRICE_LIMIT_THRESHOLD = 994987437107;
+    // @dev lower open ratio = sqrt(0.95) * 1e12
+    uint160 private constant LOWER_SQRT_PRICE_OPEN_RATIO = 974679434481;
+    // @dev upper open ratio = sqrt(1.05) * 1e12
+    uint160 private constant UPPER_SQRT_PRICE_OPEN_RATIO = 1024695076596;
 
     // @dev For reentrancy lock guard.
     bool private constant _ENTERED = true;
@@ -190,6 +190,7 @@ contract UniswapV3AutoRebalancer {
         uint8 maxIterations;
     }
 
+    /// @dev If the iteration is too high, the decimal point disappearing problem may occur (not revert).
     function openPosition(OpenPositionParam memory _param) internal returns (
         int24 tickLower,
         int24 tickUpper,
@@ -197,51 +198,64 @@ contract UniswapV3AutoRebalancer {
         uint256 amount0,
         uint256 amount1
     ) {
+        (liquidity, amount0, amount1) = (0, 0, 0);
         (uint160 sqrtPriceX96, , , , , ,) = pool.slot0();
-        uint160 lowerSqrtRatioX96 = sqrtPriceX96 * LOWER_SQRT_PRICE_OPEN_RATIO / RATIO_PRECISION;
-        uint160 upperSqrtRatioX96 = sqrtPriceX96 * UPPER_SQRT_PRICE_OPEN_RATIO / RATIO_PRECISION;
+        uint160 lowerSqrtRatioX96 =
+            FullMath.mulDiv(sqrtPriceX96, LOWER_SQRT_PRICE_OPEN_RATIO, RATIO_PRECISION).toUint160();
+        uint160 upperSqrtRatioX96 =
+            FullMath.mulDiv(sqrtPriceX96, UPPER_SQRT_PRICE_OPEN_RATIO, RATIO_PRECISION).toUint160();
 
-        tickLower = TickMathWithSpacing.getTickAtSqrtRatio(lowerSqrtRatioX96, tickSpacing);
-        tickUpper = TickMathWithSpacing.getTickAtSqrtRatio(upperSqrtRatioX96, tickSpacing);
+        tickLower = TickMathWithSpacing.getTickLowerAtSqrtRatio(lowerSqrtRatioX96, tickSpacing);
+        tickUpper = TickMathWithSpacing.getTickUpperAtSqrtRatio(upperSqrtRatioX96, tickSpacing);
 
-        for (uint8 i = 0; i < _param.maxIterations; i++) {
-            (int256 swapAmountIn, bool zeroForOne) =
-            OptimalSwapAmount.getOptimalSwapAmount(
-                IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before),
-                IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before),
+        // Recalculate lower/upper price to remove noise between real price and tick price.
+        // Without under lines, many problems arise in small numbers.
+        lowerSqrtRatioX96 = TickMath.getSqrtRatioAtTick(tickLower);
+        upperSqrtRatioX96 = TickMath.getSqrtRatioAtTick(tickUpper);
+
+        while (_param.maxIterations > 0) {
+            {
+                (int256 swapAmountIn, bool zeroForOne) =
+                OptimalSwapAmount.getOptimalSwapAmount(
+                    IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before),
+                    IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before),
+                    sqrtPriceX96,
+                    lowerSqrtRatioX96,
+                    upperSqrtRatioX96
+                );
+
+                if (swapAmountIn <= int256(0)) break;
+                pool.swap(
+                    address(this),
+                    zeroForOne,
+                    swapAmountIn,
+                    zeroForOne ? lowerSqrtRatioX96: upperSqrtRatioX96,
+                    new bytes(0)
+                );
+            }
+
+            (sqrtPriceX96, , , , , ,) = pool.slot0();
+
+            uint128 liquidityDelta = LiquidityAmounts.getLiquidityForAmounts(
                 sqrtPriceX96,
                 lowerSqrtRatioX96,
-                upperSqrtRatioX96
+                upperSqrtRatioX96,
+                IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before),
+                IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before)
             );
-
-            if (swapAmountIn == 0) break;
-
-            pool.swap(
+            (uint256 amount0delta, uint256 amount1delta ) = pool.mint(
                 address(this),
-                zeroForOne,
-                swapAmountIn,
-                zeroForOne ? lowerSqrtRatioX96: upperSqrtRatioX96,
+                tickLower,
+                tickUpper,
+                liquidityDelta,
                 new bytes(0)
             );
 
-            (sqrtPriceX96, , , , , ,) = pool.slot0();
+            liquidity = liquidity + liquidityDelta;
+            amount0 = amount0.add(amount0delta);
+            amount1 = amount1.add(amount1delta);
+            _param.maxIterations = _param.maxIterations - 1;
         }
-
-        liquidity = LiquidityAmounts.getLiquidityForAmounts(
-            sqrtPriceX96,
-            lowerSqrtRatioX96,
-            upperSqrtRatioX96,
-            IERC20(token0).balanceOf(address(this)).sub(_param.balance0Before),
-            IERC20(token1).balanceOf(address(this)).sub(_param.balance1Before)
-        );
-
-        (amount0, amount1) = pool.mint(
-            address(this),
-            tickLower,
-            tickUpper,
-            liquidity,
-            new bytes(0)
-        );
 
         bytes32 positionKey = PositionKey.compute(address(this), tickLower, tickUpper);
         (, uint256 feeGrowthInside0LastX128, uint256 feeGrowthInside1LastX128, , ) = pool.positions(positionKey);
