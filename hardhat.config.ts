@@ -22,12 +22,15 @@ const DEFAULT_COMPILER_SETTINGS = {
 
 const config: HardhatUserConfig = {
   networks: {
-    hardhat: {
-      allowUnlimitedContractSize: false,
+    ganache: {
+      url: "http://127.0.0.1:8545",
+      chainId: 1337
     },
     polygon: {
-      url: `https://polygon-mainnet.infura.io/v3/${process.env.INFURA_API_KEY}`,
-    }
+      url: "https://polygon-rpc.com",
+      chainId: 137,
+      gas: 1000000,
+    },
   },
   solidity: {
     compilers: [DEFAULT_COMPILER_SETTINGS]
